@@ -1,0 +1,398 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>ESP32-CAM MQTT Dashboard</title>
+  <!-- Paho MQTT client (WebSocket) -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/paho-mqtt/1.0.1/mqttws31.min.js"></script>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    :root {
+      --bg:      #0a0f1a;
+      --panel:   #0d1828;
+      --panel2:  #111f33;
+      --border:  #1a3352;
+      --accent:  #00d4ff;
+      --green:   #00e676;
+      --red:     #ff1744;
+      --yellow:  #ffea00;
+      --muted:   #5a7a99;
+      --text:    #e0f0ff;
+      --glow:    0 0 12px rgba(0,212,255,.3);
+    }
+    body { font-family: 'Segoe UI', system-ui, sans-serif; background: var(--bg); color: var(--text); min-height: 100vh; overflow-x: hidden; }
+
+    /* Header */
+    header { display: flex; align-items: center; gap: 14px; padding: 12px 24px; background: linear-gradient(90deg,#050c18,#0d1f3a); border-bottom: 1px solid var(--border); }
+    header .logo { width: 36px; height: 36px; border: 2px solid var(--accent); border-radius: 8px; display: grid; place-items: center; color: var(--accent); font-size: 17px; flex-shrink: 0; }
+    header h1 { font-size: 1.05rem; font-weight: 700; color: var(--accent); }
+    header p  { font-size: .7rem; color: var(--muted); }
+    .hright { margin-left: auto; display: flex; align-items: center; gap: 10px; }
+
+    /* Config bar */
+    #cfg-bar { display: flex; align-items: center; gap: 8px; padding: 8px 24px; background: #060e1c; border-bottom: 1px solid var(--border); flex-wrap: wrap; }
+    #cfg-bar label { font-size: .78rem; color: var(--muted); white-space: nowrap; }
+    .cfg-input { padding: 6px 10px; background: var(--panel2); border: 1px solid var(--border); border-radius: 6px; color: var(--text); font-size: .82rem; outline: none; width: 160px; }
+    .cfg-input:focus { border-color: var(--accent); }
+    .cfg-sep { color: var(--border); font-size: 1.2rem; }
+    #conn-btn { padding: 6px 16px; background: var(--accent); color: #000; border: none; border-radius: 6px; font-size: .82rem; font-weight: 700; cursor: pointer; transition: background .2s; }
+    #conn-btn:hover { background: #33dcff; }
+    #conn-badge { font-size: .75rem; padding: 3px 10px; border-radius: 20px; font-weight: 600; }
+    .b-ok   { background: rgba(0,230,118,.12); color: var(--green);  border: 1px solid var(--green); }
+    .b-err  { background: rgba(255,23,68,.1);  color: var(--red);    border: 1px solid var(--red);   }
+    .b-idle { background: rgba(90,122,153,.12);color: var(--muted);  border: 1px solid var(--muted); }
+    .b-warn { background: rgba(255,234,0,.1);  color: var(--yellow); border: 1px solid var(--yellow);}
+
+    /* Grid */
+    .grid { display: grid; grid-template-columns: 1fr 380px; gap: 14px; padding: 14px 24px; height: calc(100vh - 118px); }
+    @media(max-width:900px){ .grid{ grid-template-columns:1fr; height:auto; } }
+
+    /* Panels */
+    .panel { background: var(--panel); border: 1px solid var(--border); border-radius: 12px; overflow: hidden; display: flex; flex-direction: column; }
+    .ph { display: flex; align-items: center; gap: 8px; padding: 9px 14px; background: var(--panel2); border-bottom: 1px solid var(--border); font-size: .74rem; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; color: var(--accent); }
+    .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--green); animation: pulse 1.6s infinite; flex-shrink: 0; }
+    .dot.off { background: var(--muted); animation: none; }
+    @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.3} }
+
+    /* Video */
+    #video-panel { grid-column:1; grid-row:1/3; }
+    .vwrap { flex:1; display:flex; align-items:center; justify-content:center; background:#000; position:relative; min-height:300px; }
+    #stream-img { max-width:100%; max-height:100%; object-fit:contain; display:none; }
+    #vid-ph { position:absolute; display:flex; flex-direction:column; align-items:center; gap:10px; color:var(--muted); font-size:.82rem; }
+    #vid-ph .icon { font-size:2.8rem; }
+    .voverlay { position:absolute; bottom:8px; left:10px; font-size:.68rem; color:rgba(255,255,255,.5); background:rgba(0,0,0,.4); padding:2px 8px; border-radius:4px; }
+
+    /* Status grid */
+    #status-panel { grid-column:2; grid-row:1; }
+    .sg { display:grid; grid-template-columns:1fr 1fr; gap:7px; padding:10px; }
+    .si { background:var(--panel2); border:1px solid var(--border); border-radius:8px; padding:9px 11px; }
+    .sl { font-size:.66rem; color:var(--muted); text-transform:uppercase; letter-spacing:.05em; margin-bottom:3px; }
+    .sv { font-size:.82rem; font-weight:700; }
+    .badge { display:inline-flex; align-items:center; gap:4px; padding:2px 8px; border-radius:12px; font-size:.7rem; font-weight:700; }
+    .badge-ok  { background:rgba(0,230,118,.12); color:var(--green); border:1px solid rgba(0,230,118,.3); }
+    .badge-err { background:rgba(255,23,68,.1);  color:var(--red);   border:1px solid rgba(255,23,68,.3); }
+    .badge-na  { background:rgba(90,122,153,.12);color:var(--muted); border:1px solid rgba(90,122,153,.3);}
+
+    /* Sensor panel */
+    #sensor-panel { grid-column:2; grid-row:2; overflow-y:auto; }
+    .ss { padding:8px; display:flex; flex-direction:column; gap:8px; }
+    .sg2 { background:var(--panel2); border:1px solid var(--border); border-radius:10px; overflow:hidden; }
+    .sgt { padding:6px 11px; font-size:.68rem; font-weight:700; letter-spacing:.07em; text-transform:uppercase; color:#0099cc; border-bottom:1px solid var(--border); }
+    .sr { display:flex; align-items:center; padding:5px 11px; gap:7px; border-bottom:1px solid rgba(26,51,82,.5); transition:background .15s; }
+    .sr:last-child { border-bottom:none; }
+    .sr:hover { background:rgba(0,212,255,.04); }
+    .sn { flex:1; font-size:.76rem; color:var(--muted); }
+    .sv2 { font-size:.88rem; font-weight:700; font-variant-numeric:tabular-nums; min-width:80px; text-align:right; }
+    .su { font-size:.66rem; color:var(--muted); min-width:26px; }
+    .gw { display:flex; align-items:center; gap:5px; }
+    .gb { width:52px; height:4px; background:var(--border); border-radius:3px; overflow:hidden; flex-shrink:0; }
+    .gf { height:100%; border-radius:3px; background:linear-gradient(90deg,#0099cc,#00d4ff); transition:width .6s ease; }
+
+    /* MQTT log */
+    #log { font-size:.68rem; color:var(--muted); padding:8px 12px; border-top:1px solid var(--border); max-height:70px; overflow-y:auto; font-family:monospace; }
+
+    /* Scrollbar */
+    ::-webkit-scrollbar { width:4px; } ::-webkit-scrollbar-thumb { background:var(--border); border-radius:3px; }
+    footer { text-align:center; padding:5px; font-size:.66rem; color:var(--muted); border-top:1px solid var(--border); }
+  </style>
+</head>
+<body>
+
+<header>
+  <div class="logo">🌊</div>
+  <div>
+    <h1>ESP32-CAM MQTT Dashboard</h1>
+    <p>Live telemetry via MQTT · WebSocket broker connection</p>
+  </div>
+  <div class="hright">
+    <span id="uptime-badge" style="font-size:.73rem;color:var(--muted)">Uptime: --</span>
+    <span id="msg-count"    style="font-size:.73rem;color:var(--muted)">Msgs: 0</span>
+  </div>
+</header>
+
+<!-- Config bar -->
+<div id="cfg-bar">
+  <label>Broker IP:</label>
+  <input class="cfg-input" id="broker-ip" value="192.168.137.1" placeholder="192.168.137.1"/>
+  <label>WS Port:</label>
+  <input class="cfg-input" id="broker-port" value="9001" style="width:70px"/>
+  <label style="margin-left:8px">ESP32 IP (video):</label>
+  <input class="cfg-input" id="esp-ip" value="" placeholder="192.168.137.x"/>
+  <button id="conn-btn" onclick="connectAll()">▶ Connect</button>
+  <span id="conn-badge" class="b-idle">Not connected</span>
+</div>
+
+<div class="grid">
+
+  <!-- VIDEO -->
+  <div class="panel" id="video-panel">
+    <div class="ph"><div class="dot off" id="cam-dot"></div>LIVE CAMERA FEED<span style="margin-left:auto;font-size:.68rem;color:var(--muted)" id="res-label"></span></div>
+    <div class="vwrap">
+      <div id="vid-ph"><span class="icon">📷</span><span>Enter broker &amp; ESP32 IP, then click Connect</span></div>
+      <img id="stream-img" alt="Live stream"/>
+      <div class="voverlay" id="fps-label"></div>
+    </div>
+  </div>
+
+  <!-- STATUS -->
+  <div class="panel" id="status-panel">
+    <div class="ph"><div class="dot off" id="sys-dot"></div>SYSTEM STATUS</div>
+    <div class="sg">
+      <div class="si"><div class="sl">MQTT</div>      <div class="sv" id="st-mqtt"><span class="badge badge-na">–</span></div></div>
+      <div class="si"><div class="sl">Camera</div>    <div class="sv" id="st-cam"> <span class="badge badge-na">–</span></div></div>
+      <div class="si"><div class="sl">BMP280</div>    <div class="sv" id="st-bmp"> <span class="badge badge-na">–</span></div></div>
+      <div class="si"><div class="sl">MPU6050</div>   <div class="sv" id="st-mpu"> <span class="badge badge-na">–</span></div></div>
+      <div class="si"><div class="sl">SD Card</div>   <div class="sv" id="st-sd">  <span class="badge badge-na">UNAVAILABLE</span></div></div>
+      <div class="si"><div class="sl">WiFi RSSI</div> <div class="sv" id="st-rssi">–</div></div>
+      <div class="si"><div class="sl">Last msg</div>  <div class="sv" id="st-last">–</div></div>
+      <div class="si"><div class="sl">Topic rate</div><div class="sv" id="st-rate">–</div></div>
+    </div>
+    <div id="log"></div>
+  </div>
+
+  <!-- SENSORS -->
+  <div class="panel" id="sensor-panel">
+    <div class="ph"><div class="dot off" id="data-dot"></div>SENSOR DATA</div>
+    <div class="ss">
+
+      <div class="sg2">
+        <div class="sgt">🌡 BMP280 — Pressure &amp; Environment</div>
+        <div class="sr"><span class="sn">Temperature</span><span class="sv2" id="v-temp">–</span><span class="su">°C</span></div>
+        <div class="sr"><span class="sn">Pressure</span>
+          <div class="gw"><div class="gb"><div class="gf" id="g-pres" style="width:0%"></div></div><span class="sv2" id="v-pres">–</span></div>
+          <span class="su">hPa</span></div>
+        <div class="sr"><span class="sn">Altitude</span><span class="sv2" id="v-alt">–</span><span class="su">m</span></div>
+      </div>
+
+      <div class="sg2">
+        <div class="sgt">📐 MPU6050 — Accelerometer (g)</div>
+        <div class="sr"><span class="sn">Accel X</span>
+          <div class="gw"><div class="gb"><div class="gf" id="g-ax" style="width:0%"></div></div><span class="sv2" id="v-ax">–</span></div><span class="su">g</span></div>
+        <div class="sr"><span class="sn">Accel Y</span>
+          <div class="gw"><div class="gb"><div class="gf" id="g-ay" style="width:0%"></div></div><span class="sv2" id="v-ay">–</span></div><span class="su">g</span></div>
+        <div class="sr"><span class="sn">Accel Z</span>
+          <div class="gw"><div class="gb"><div class="gf" id="g-az" style="width:0%"></div></div><span class="sv2" id="v-az">–</span></div><span class="su">g</span></div>
+      </div>
+
+      <div class="sg2">
+        <div class="sgt">🔄 MPU6050 — Gyroscope (°/s)</div>
+        <div class="sr"><span class="sn">Gyro X</span><span class="sv2" id="v-gx">–</span><span class="su">°/s</span></div>
+        <div class="sr"><span class="sn">Gyro Y</span><span class="sv2" id="v-gy">–</span><span class="su">°/s</span></div>
+        <div class="sr"><span class="sn">Gyro Z</span><span class="sv2" id="v-gz">–</span><span class="su">°/s</span></div>
+      </div>
+
+      <div class="sg2">
+        <div class="sgt">🧭 Orientation (computed)</div>
+        <div class="sr"><span class="sn">Roll</span>
+          <div class="gw"><div class="gb"><div class="gf" id="g-roll" style="width:0%"></div></div><span class="sv2" id="v-roll">–</span></div><span class="su">°</span></div>
+        <div class="sr"><span class="sn">Pitch</span>
+          <div class="gw"><div class="gb"><div class="gf" id="g-pitch" style="width:0%"></div></div><span class="sv2" id="v-pitch">–</span></div><span class="su">°</span></div>
+      </div>
+
+    </div>
+  </div>
+</div>
+
+<footer>ESP32-CAM MQTT Dashboard · Mosquitto broker · WebSocket port 9001</footer>
+
+<script>
+/* ── State ─────────────────────────────────── */
+let mqttClient  = null;
+let msgCount    = 0;
+let msgTimes    = [];
+let streamLoaded = false;
+
+/* ── Connect both MQTT and video stream ────── */
+function connectAll() {
+  const brokerIP   = document.getElementById('broker-ip').value.trim();
+  const brokerPort = parseInt(document.getElementById('broker-port').value.trim()) || 9001;
+  const espIP      = document.getElementById('esp-ip').value.trim();
+
+  if (!brokerIP) { alert('Enter broker IP'); return; }
+
+  setBadge('st-mqtt', null, 'Connecting…', 'warn');
+  setConnBadge('connecting');
+
+  connectMQTT(brokerIP, brokerPort);
+
+  if (espIP) startStream(espIP);
+}
+
+/* ── MQTT via Paho WebSocket ───────────────── */
+function connectMQTT(ip, port) {
+  if (mqttClient && mqttClient.isConnected()) mqttClient.disconnect();
+
+  const clientId = 'dashboard_' + Math.random().toString(16).slice(2, 8);
+  mqttClient = new Paho.MQTT.Client(ip, port, clientId);
+
+  mqttClient.onConnectionLost = (res) => {
+    addLog('Connection lost: ' + res.errorMessage);
+    setBadge('st-mqtt', false);
+    setConnBadge('error');
+    document.getElementById('sys-dot').classList.add('off');
+    // Auto-reconnect after 4 s
+    setTimeout(() => {
+      if (!mqttClient.isConnected()) {
+        addLog('Reconnecting…');
+        mqttConnect();
+      }
+    }, 4000);
+  };
+
+  mqttClient.onMessageArrived = onMessage;
+
+  mqttConnect();
+}
+
+function mqttConnect() {
+  mqttClient.connect({
+    timeout: 8,
+    keepAliveInterval: 20,
+    onSuccess: () => {
+      addLog('MQTT connected ✓');
+      setBadge('st-mqtt', true, 'ONLINE');
+      setConnBadge('ok');
+      document.getElementById('sys-dot').classList.remove('off');
+      // Subscribe to all sensor topics
+      mqttClient.subscribe('sensors/node1/#');
+      addLog('Subscribed: sensors/node1/#');
+    },
+    onFailure: (err) => {
+      addLog('MQTT failed: ' + err.errorMessage);
+      setBadge('st-mqtt', false);
+      setConnBadge('error');
+    }
+  });
+}
+
+/* ── Message handler ───────────────────────── */
+function onMessage(msg) {
+  msgCount++;
+  document.getElementById('msg-count').textContent = 'Msgs: ' + msgCount;
+
+  const now = Date.now();
+  msgTimes.push(now);
+  msgTimes = msgTimes.filter(t => now - t < 5000);
+  document.getElementById('st-rate').textContent = (msgTimes.length / 5).toFixed(1) + ' /s';
+
+  const ts = new Date();
+  document.getElementById('st-last').textContent =
+    pad(ts.getHours()) + ':' + pad(ts.getMinutes()) + ':' + pad(ts.getSeconds());
+
+  let d;
+  try { d = JSON.parse(msg.payloadString); } catch { return; }
+
+  const topic = msg.destinationName;
+
+  if (topic === 'sensors/node1/bmp280') {
+    setText('v-temp', d.temperature?.toFixed(1) ?? '–');
+    setText('v-pres', d.pressure?.toFixed(1)    ?? '–');
+    setText('v-alt',  d.altitude?.toFixed(1)    ?? '–');
+    setGauge('g-pres', ((d.pressure ?? 900) - 900) / 200);
+    setBadge('st-bmp', d.ok);
+    document.getElementById('data-dot').classList.toggle('off', !d.ok);
+  }
+
+  if (topic === 'sensors/node1/mpu6050') {
+    setText('v-ax', d.accelX?.toFixed(4) ?? '–');
+    setText('v-ay', d.accelY?.toFixed(4) ?? '–');
+    setText('v-az', d.accelZ?.toFixed(4) ?? '–');
+    setText('v-gx', d.gyroX?.toFixed(2)  ?? '–');
+    setText('v-gy', d.gyroY?.toFixed(2)  ?? '–');
+    setText('v-gz', d.gyroZ?.toFixed(2)  ?? '–');
+    setText('v-roll',  d.roll?.toFixed(1)  ?? '–');
+    setText('v-pitch', d.pitch?.toFixed(1) ?? '–');
+    setGauge('g-ax',   ((d.accelX ?? 0) + 2) / 4);
+    setGauge('g-ay',   ((d.accelY ?? 0) + 2) / 4);
+    setGauge('g-az',   ((d.accelZ ?? 0) + 2) / 4);
+    setGauge('g-roll',  ((d.roll  ?? 0) + 180) / 360);
+    setGauge('g-pitch', ((d.pitch ?? 0) + 90)  / 180);
+    setBadge('st-mpu', d.ok);
+  }
+
+  if (topic === 'sensors/node1/camera' || topic === 'sensors/node1/status') {
+    if (d.rssi !== undefined) setText('st-rssi', d.rssi + ' dBm');
+    if (d.uptime !== undefined) {
+      const s = d.uptime;
+      document.getElementById('uptime-badge').textContent =
+        'Uptime: ' + pad(Math.floor(s/3600)) + ':' + pad(Math.floor((s%3600)/60)) + ':' + pad(s%60);
+    }
+    if (d.camOK !== undefined) {
+      setBadge('st-cam', d.camOK);
+      document.getElementById('cam-dot').classList.toggle('off', !d.camOK);
+    }
+    if (d.sdOK !== undefined || d.sdOK === false) {
+      document.getElementById('st-sd').innerHTML = '<span class="badge badge-na">UNAVAILABLE</span>';
+    }
+  }
+}
+
+/* ── Video stream ──────────────────────────── */
+function startStream(ip) {
+  const img = document.getElementById('stream-img');
+  const ph  = document.getElementById('vid-ph');
+
+  img.onload = () => {
+    if (!streamLoaded) {
+      streamLoaded = true;
+      img.style.display = 'block';
+      ph.style.display  = 'none';
+      document.getElementById('cam-dot').classList.remove('off');
+      document.getElementById('fps-label').textContent = '● LIVE';
+      document.getElementById('res-label').textContent = 'MJPEG';
+    }
+  };
+  img.onerror = () => {
+    img.style.display = 'none'; ph.style.display = 'flex';
+    ph.innerHTML = '<span class="icon">⚠️</span><span>Stream unavailable</span>';
+    document.getElementById('cam-dot').classList.add('off');
+    document.getElementById('fps-label').textContent = '';
+    streamLoaded = false;
+  };
+
+  const base = ip.startsWith('http') ? ip : 'http://' + ip;
+  img.src = base + '/stream?' + Date.now();
+}
+
+/* ── Helpers ───────────────────────────────── */
+function setText(id, val) { const e = document.getElementById(id); if (e) e.textContent = val; }
+
+function setGauge(id, frac) {
+  const e = document.getElementById(id);
+  if (e) e.style.width = (Math.max(0, Math.min(1, frac)) * 100).toFixed(1) + '%';
+}
+
+function setBadge(id, ok, label, type) {
+  const e = document.getElementById(id); if (!e) return;
+  if (type === 'warn') {
+    e.innerHTML = `<span class="badge b-warn">${label ?? '…'}</span>`; return;
+  }
+  if (ok === true)  e.innerHTML = `<span class="badge badge-ok">✔ ${label ?? 'ONLINE'}</span>`;
+  else if (ok === false) e.innerHTML = `<span class="badge badge-err">✘ OFFLINE</span>`;
+  else e.innerHTML = `<span class="badge badge-na">–</span>`;
+}
+
+function setConnBadge(state) {
+  const e = document.getElementById('conn-badge');
+  e.className = state === 'ok' ? 'b-ok' : state === 'error' ? 'b-err' : state === 'connecting' ? 'b-warn' : 'b-idle';
+  e.textContent = state === 'ok' ? '✔ Connected' : state === 'error' ? '✘ Error' : state === 'connecting' ? '⟳ Connecting…' : 'Not connected';
+}
+
+function addLog(msg) {
+  const log = document.getElementById('log');
+  const line = document.createElement('div');
+  const now = new Date();
+  line.textContent = `[${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())}] ${msg}`;
+  log.appendChild(line);
+  log.scrollTop = log.scrollHeight;
+  // Keep last 30 lines
+  while (log.children.length > 30) log.removeChild(log.firstChild);
+}
+
+function pad(n) { return String(n).padStart(2, '0'); }
+
+document.getElementById('broker-ip').addEventListener('keydown', e => { if (e.key === 'Enter') connectAll(); });
+</script>
+</body>
+</html>
